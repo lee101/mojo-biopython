@@ -19,6 +19,12 @@ class Seq:
         else:
             self._data = bytes(data).decode("ascii")
 
+    @classmethod
+    def _from_ascii_bytes(cls, data: bytes) -> "Seq":
+        sequence = cls.__new__(cls)
+        sequence._data = data.decode("ascii")
+        return sequence
+
     def __str__(self) -> str:
         return self._data
 

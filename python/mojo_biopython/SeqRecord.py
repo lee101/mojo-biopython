@@ -39,6 +39,19 @@ class SeqRecord:
             {} if letter_annotations is None else dict(letter_annotations)
         )
 
+    @classmethod
+    def _from_parsed(cls, seq: Seq, identifier: str, description: str) -> "SeqRecord":
+        record = cls.__new__(cls)
+        record.seq = seq
+        record.id = identifier
+        record.name = identifier
+        record.description = description
+        record.dbxrefs = []
+        record.features = []
+        record.annotations = {}
+        record.letter_annotations = {}
+        return record
+
     def __len__(self) -> int:
         return len(self.seq)
 

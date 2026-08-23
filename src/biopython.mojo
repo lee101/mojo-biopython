@@ -87,8 +87,7 @@ def _alignment_score(
             var pdu = pd.unsafe_load[width=W](j)
             var piu = pi.unsafe_load[width=W](j)
             var dv = max(
-                pmu + open_gap_score,
-                max(pdu + extend_gap_score, piu + open_gap_score),
+                max(pmu, piu) + open_gap_score, pdu + extend_gap_score
             )
             if local:
                 mv = max(SIMD[DType.float64, W](0.0), mv)
@@ -96,15 +95,16 @@ def _alignment_score(
             var iv = SIMD[DType.float64, W]()
             comptime for lane in range(W):
                 if lane == 0:
-                    iv[lane] = _max3(
-                        cm[unsafe_offset=j - 1] + open_gap_score,
-                        cd[unsafe_offset=j - 1] + open_gap_score,
+                    iv[lane] = max(
+                        max(
+                            cm[unsafe_offset=j - 1],
+                            cd[unsafe_offset=j - 1],
+                        ) + open_gap_score,
                         ci[unsafe_offset=j - 1] + extend_gap_score,
                     )
                 else:
-                    iv[lane] = _max3(
-                        mv[lane - 1] + open_gap_score,
-                        dv[lane - 1] + open_gap_score,
+                    iv[lane] = max(
+                        max(mv[lane - 1], dv[lane - 1]) + open_gap_score,
                         iv[lane - 1] + extend_gap_score,
                     )
                 if local:
@@ -128,14 +128,14 @@ def _alignment_score(
                 )
                 + sub
             )
-            var dv = _max3(
-                pm[unsafe_offset=j] + open_gap_score,
+            var dv = max(
+                max(pm[unsafe_offset=j], pi[unsafe_offset=j])
+                + open_gap_score,
                 pd[unsafe_offset=j] + extend_gap_score,
-                pi[unsafe_offset=j] + open_gap_score,
             )
-            var iv = _max3(
-                cm[unsafe_offset=j - 1] + open_gap_score,
-                cd[unsafe_offset=j - 1] + open_gap_score,
+            var iv = max(
+                max(cm[unsafe_offset=j - 1], cd[unsafe_offset=j - 1])
+                + open_gap_score,
                 ci[unsafe_offset=j - 1] + extend_gap_score,
             )
             if local:
@@ -211,6 +211,7 @@ def _alignment_trace(
     var best_i = 0
     var best_j = 0
     var best_state = UInt8(0)
+    comptime W = simd_width_of[DType.float64]()
     for i in range(1, nt + 1):
         var row_start = i * cols
         if local:
@@ -225,7 +226,94 @@ def _alignment_trace(
             ci[unsafe_offset=0] = NEG
             dt[unsafe_offset=row_start] = UInt8(0) if i == 1 else UInt8(1)
         var target_char = target[unsafe_offset=i - 1]
-        for j in range(1, nq + 1):
+        var j = 1
+        while j + W <= cols:
+            var idx = row_start + j
+            var query_chars = query.unsafe_load[width=W](j - 1)
+            var matches = query_chars.eq(SIMD[DType.uint8, W](target_char))
+            var subs = matches.select(
+                SIMD[DType.float64, W](match_score),
+                SIMD[DType.float64, W](mismatch_score),
+            )
+
+            var pmd = pm.unsafe_load[width=W](j - 1)
+            var pdd = pd.unsafe_load[width=W](j - 1)
+            var pid = pi.unsafe_load[width=W](j - 1)
+            var mbase = max(pmd, pdd)
+            var ms = pdd.gt(pmd).select(
+                SIMD[DType.uint8, W](1), SIMD[DType.uint8, W](0)
+            )
+            ms = pid.gt(mbase).select(SIMD[DType.uint8, W](2), ms)
+            mbase = max(mbase, pid)
+            var mv = mbase + subs
+
+            var pmu = pm.unsafe_load[width=W](j)
+            var pdu = pd.unsafe_load[width=W](j)
+            var piu = pi.unsafe_load[width=W](j)
+            var dv = pmu + open_gap_score
+            var ds = SIMD[DType.uint8, W](0)
+            var candidate = pdu + extend_gap_score
+            ds = candidate.gt(dv).select(SIMD[DType.uint8, W](1), ds)
+            dv = max(dv, candidate)
+            candidate = piu + open_gap_score
+            ds = candidate.gt(dv).select(SIMD[DType.uint8, W](2), ds)
+            dv = max(dv, candidate)
+
+            var iv = SIMD[DType.float64, W]()
+            var istates = SIMD[DType.uint8, W]()
+            comptime for lane in range(W):
+                if lane == 0:
+                    iv[lane] = cm[unsafe_offset=j - 1] + open_gap_score
+                    istates[lane] = UInt8(0)
+                    var icandidate = cd[unsafe_offset=j - 1] + open_gap_score
+                    if icandidate > iv[lane]:
+                        iv[lane] = icandidate
+                        istates[lane] = UInt8(1)
+                    icandidate = ci[unsafe_offset=j - 1] + extend_gap_score
+                    if icandidate > iv[lane]:
+                        iv[lane] = icandidate
+                        istates[lane] = UInt8(2)
+                else:
+                    iv[lane] = mv[lane - 1] + open_gap_score
+                    istates[lane] = UInt8(0)
+                    var icandidate = dv[lane - 1] + open_gap_score
+                    if icandidate > iv[lane]:
+                        iv[lane] = icandidate
+                        istates[lane] = UInt8(1)
+                    icandidate = iv[lane - 1] + extend_gap_score
+                    if icandidate > iv[lane]:
+                        iv[lane] = icandidate
+                        istates[lane] = UInt8(2)
+
+                if local:
+                    if mbase[lane] <= 0.0:
+                        ms[lane] = UInt8(3)
+                    if mv[lane] <= 0.0:
+                        mv[lane] = 0.0
+                        ms[lane] = UInt8(3)
+                    if dv[lane] <= 0.0:
+                        dv[lane] = 0.0
+                        ds[lane] = UInt8(3)
+                    if iv[lane] <= 0.0:
+                        iv[lane] = 0.0
+                        istates[lane] = UInt8(3)
+                    var state = _best_state(mv[lane], dv[lane], iv[lane])
+                    var value = _max3(mv[lane], dv[lane], iv[lane])
+                    if value > best:
+                        best = value
+                        best_i = i
+                        best_j = j + lane
+                        best_state = state
+
+            cm.unsafe_store(j, mv)
+            cd.unsafe_store(j, dv)
+            ci.unsafe_store(j, iv)
+            mt.unsafe_store(idx, ms)
+            dt.unsafe_store(idx, ds)
+            it.unsafe_store(idx, istates)
+            j += W
+
+        while j < cols:
             var idx = row_start + j
             var sub = (
                 match_score if target_char
@@ -287,6 +375,7 @@ def _alignment_trace(
                     best_i = i
                     best_j = j
                     best_state = state
+            j += 1
         var tm = pm
         pm = cm
         cm = tm

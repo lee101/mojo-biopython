@@ -64,6 +64,26 @@ def test_global_traceback_matches_unique_biopython_alignment():
     assert np.array_equal(got.aligned, expected.aligned)
 
 
+@pytest.mark.parametrize("length", [4, 5, 7, 8, 9])
+def test_traceback_simd_block_and_tail_match_biopython(length):
+    sequence = ("ACGTTGCAAG" * 2)[:length]
+    mojo = configured(PairwiseAligner)
+    bio = configured(BioPairwiseAligner)
+    got = mojo.align(sequence, sequence)[0]
+    expected = bio.align(sequence, sequence)[0]
+    assert got.score == expected.score
+    assert np.array_equal(got.coordinates, expected.coordinates)
+
+
+def test_local_traceback_simd_tail_matches_biopython():
+    mojo = configured(PairwiseAligner, "local")
+    bio = configured(BioPairwiseAligner, "local")
+    got = mojo.align("TTACGTTGCAAGTAA", "GGACGTTGCAACC")[0]
+    expected = bio.align("TTACGTTGCAAGTAA", "GGACGTTGCAACC")[0]
+    assert got.score == expected.score
+    assert np.array_equal(got.coordinates, expected.coordinates)
+
+
 def test_local_traceback_matches_unique_biopython_alignment():
     mojo = configured(PairwiseAligner, "local")
     bio = configured(BioPairwiseAligner, "local")

@@ -8,8 +8,9 @@ a development dependency used for parity tests; the runtime depends on NumPy
 and the compiled Mojo shared library.
 
 This is an early, deliberately narrow port with parity tests around the covered
-API. On the measured machine it is faster than Biopython 1.87 for FASTQ parsing
-and reverse complement, and slower for alignment and FASTA parsing.
+API. On the measured machine it is faster than Biopython 1.87 for alignment
+traceback, FASTQ parsing, and reverse complement. Score-only alignment is near
+parity, while FASTA parsing remains slower.
 
 ## Covered subset
 
@@ -89,11 +90,11 @@ include creation of the public Python record objects.
 
 | Kernel | Problem | Mojo | Biopython 1.87 | Speedup |
 |---|---:|---:|---:|---:|
-| global score | 2,500 x 2,500 nt | 45.66 ms | 29.74 ms | 0.65x |
-| global traceback | 1,400 x 1,400 nt | 48.68 ms | 21.13 ms | 0.43x |
-| FASTA parse | 60k records / 11.5 MB | 355.41 ms | 227.27 ms | 0.64x |
-| FASTQ parse | 40k reads / 9.2 MB | 284.93 ms | 298.35 ms | 1.05x |
-| reverse complement | 10 million nt | 11.16 ms | 22.50 ms | 2.02x |
+| global score | 2,500 x 2,500 nt | 30.61 ms | 28.39 ms | 0.93x |
+| global traceback | 1,400 x 1,400 nt | 12.28 ms | 18.72 ms | 1.53x |
+| FASTA parse | 60k records / 11.5 MB | 230.63 ms | 207.08 ms | 0.90x |
+| FASTQ parse | 40k reads / 9.2 MB | 245.49 ms | 286.79 ms | 1.17x |
+| reverse complement | 10 million nt | 11.02 ms | 21.71 ms | 1.97x |
 
 No GPU path is included. Parsing and reverse complement are byte-streaming
 kernels, while the affine dynamic program performs fewer than two floating

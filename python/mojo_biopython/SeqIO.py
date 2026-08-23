@@ -51,15 +51,13 @@ def _parse_fasta(data: bytes):
     )
     if found < 0:
         raise RuntimeError("Mojo FASTA scanner rejected its buffers")
-    values = iter(positions[:found].ravel().tolist())
-    for header_start, header_end, seq_start, seq_end in zip(
-        values, values, values, values
-    ):
-        identifier, description = _header_fields(data[header_start:header_end])
+    make_seq = Seq._from_ascii_bytes
+    make_record = SeqRecord._from_parsed
+    for header_start, header_end, seq_start, seq_end in positions[:found].tolist():
+        description = data[header_start:header_end].decode("utf-8")
+        identifier = description.split(None, 1)[0] if description else ""
         sequence = data[seq_start:seq_end].translate(None, b"\r\n \t")
-        yield SeqRecord(
-            Seq(sequence), id=identifier, name=identifier, description=description
-        )
+        yield make_record(make_seq(sequence), identifier, description)
 
 
 def _parse_fastq(data: bytes):
@@ -107,11 +105,10 @@ def parse(handle, format, alphabet=None):
         raise ValueError("The alphabet argument is no longer supported")
     normalized = format.lower()
     if normalized in {"fasta", "fa", "fna"}:
-        yield from _parse_fasta(_read(handle))
-    elif normalized in {"fastq", "fastq-sanger"}:
-        yield from _parse_fastq(_read(handle))
-    else:
-        raise ValueError(f"Unknown format {format!r}; supported formats are fasta and fastq")
+        return _parse_fasta(_read(handle))
+    if normalized in {"fastq", "fastq-sanger"}:
+        return _parse_fastq(_read(handle))
+    raise ValueError(f"Unknown format {format!r}; supported formats are fasta and fastq")
 
 
 def read(handle, format, alphabet=None):
