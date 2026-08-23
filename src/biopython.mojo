@@ -1,11 +1,10 @@
 """C ABI kernels for pairwise alignment and sequence-file parsing."""
 
-from std.algorithm import parallelize
 from std.sys.info import simd_width_of
 
-comptime BPtr = UnsafePointer[UInt8, AnyOrigin[mut=True]]
-comptime FPtr = UnsafePointer[Float64, AnyOrigin[mut=True]]
-comptime IPtr = UnsafePointer[Int64, AnyOrigin[mut=True]]
+comptime BPtr = Pointer[UInt8, AnyOrigin[mut=True]]
+comptime FPtr = Pointer[Float64, AnyOrigin[mut=True]]
+comptime IPtr = Pointer[Int64, AnyOrigin[mut=True]]
 comptime NEG = -1.0e300
 
 
@@ -35,54 +34,58 @@ def _alignment_score(
 ) -> Float64:
     var cols = nq + 1
     var pm = work
-    var pd = work + cols
-    var pi = work + 2 * cols
-    var cm = work + 3 * cols
-    var cd = work + 4 * cols
-    var ci = work + 5 * cols
+    var pd = work.unsafe_offset(cols)
+    var pi = work.unsafe_offset(2 * cols)
+    var cm = work.unsafe_offset(3 * cols)
+    var cd = work.unsafe_offset(4 * cols)
+    var ci = work.unsafe_offset(5 * cols)
 
     if local:
         for j in range(cols):
-            pm[j] = 0.0
-            pd[j] = 0.0
-            pi[j] = 0.0
+            pm[unsafe_offset=j] = 0.0
+            pd[unsafe_offset=j] = 0.0
+            pi[unsafe_offset=j] = 0.0
     else:
-        pm[0] = 0.0
-        pd[0] = NEG
-        pi[0] = NEG
+        pm[unsafe_offset=0] = 0.0
+        pd[unsafe_offset=0] = NEG
+        pi[unsafe_offset=0] = NEG
         for j in range(1, cols):
-            pm[j] = NEG
-            pd[j] = NEG
-            pi[j] = open_gap_score + Float64(j - 1) * extend_gap_score
+            pm[unsafe_offset=j] = NEG
+            pd[unsafe_offset=j] = NEG
+            pi[unsafe_offset=j] = (
+                open_gap_score + Float64(j - 1) * extend_gap_score
+            )
 
     var best = 0.0 if local else NEG
     comptime W = simd_width_of[DType.float64]()
     for i in range(1, nt + 1):
         if local:
-            cm[0] = 0.0
-            cd[0] = 0.0
-            ci[0] = 0.0
+            cm[unsafe_offset=0] = 0.0
+            cd[unsafe_offset=0] = 0.0
+            ci[unsafe_offset=0] = 0.0
         else:
-            cm[0] = NEG
-            cd[0] = open_gap_score + Float64(i - 1) * extend_gap_score
-            ci[0] = NEG
+            cm[unsafe_offset=0] = NEG
+            cd[unsafe_offset=0] = (
+                open_gap_score + Float64(i - 1) * extend_gap_score
+            )
+            ci[unsafe_offset=0] = NEG
         var j = 1
         while j + W <= cols:
-            var query_chars = query.load[width=W](j - 1)
+            var query_chars = query.unsafe_load[width=W](j - 1)
             var matches = query_chars.eq(
-                SIMD[DType.uint8, W](target[i - 1])
+                SIMD[DType.uint8, W](target[unsafe_offset=i - 1])
             )
             var subs = matches.select(
                 SIMD[DType.float64, W](match_score),
                 SIMD[DType.float64, W](mismatch_score),
             )
-            var pmd = pm.load[width=W](j - 1)
-            var pdd = pd.load[width=W](j - 1)
-            var pid = pi.load[width=W](j - 1)
+            var pmd = pm.unsafe_load[width=W](j - 1)
+            var pdd = pd.unsafe_load[width=W](j - 1)
+            var pid = pi.unsafe_load[width=W](j - 1)
             var mv = max(pmd, max(pdd, pid)) + subs
-            var pmu = pm.load[width=W](j)
-            var pdu = pd.load[width=W](j)
-            var piu = pi.load[width=W](j)
+            var pmu = pm.unsafe_load[width=W](j)
+            var pdu = pd.unsafe_load[width=W](j)
+            var piu = pi.unsafe_load[width=W](j)
             var dv = max(
                 pmu + open_gap_score,
                 max(pdu + extend_gap_score, piu + open_gap_score),
@@ -94,9 +97,9 @@ def _alignment_score(
             comptime for lane in range(W):
                 if lane == 0:
                     iv[lane] = _max3(
-                        cm[j - 1] + open_gap_score,
-                        cd[j - 1] + open_gap_score,
-                        ci[j - 1] + extend_gap_score,
+                        cm[unsafe_offset=j - 1] + open_gap_score,
+                        cd[unsafe_offset=j - 1] + open_gap_score,
+                        ci[unsafe_offset=j - 1] + extend_gap_score,
                     )
                 else:
                     iv[lane] = _max3(
@@ -108,31 +111,41 @@ def _alignment_score(
                     iv[lane] = max(0.0, iv[lane])
             if local:
                 best = max(best, max(mv, max(dv, iv)).reduce_max())
-            cm.store(j, mv)
-            cd.store(j, dv)
-            ci.store(j, iv)
+            cm.unsafe_store(j, mv)
+            cd.unsafe_store(j, dv)
+            ci.unsafe_store(j, iv)
             j += W
         while j < cols:
-            var sub = match_score if target[i - 1] == query[j - 1] else mismatch_score
-            var mv = _max3(pm[j - 1], pd[j - 1], pi[j - 1]) + sub
+            var sub = (
+                match_score if target[unsafe_offset=i - 1]
+                == query[unsafe_offset=j - 1] else mismatch_score
+            )
+            var mv = (
+                _max3(
+                    pm[unsafe_offset=j - 1],
+                    pd[unsafe_offset=j - 1],
+                    pi[unsafe_offset=j - 1],
+                )
+                + sub
+            )
             var dv = _max3(
-                pm[j] + open_gap_score,
-                pd[j] + extend_gap_score,
-                pi[j] + open_gap_score,
+                pm[unsafe_offset=j] + open_gap_score,
+                pd[unsafe_offset=j] + extend_gap_score,
+                pi[unsafe_offset=j] + open_gap_score,
             )
             var iv = _max3(
-                cm[j - 1] + open_gap_score,
-                cd[j - 1] + open_gap_score,
-                ci[j - 1] + extend_gap_score,
+                cm[unsafe_offset=j - 1] + open_gap_score,
+                cd[unsafe_offset=j - 1] + open_gap_score,
+                ci[unsafe_offset=j - 1] + extend_gap_score,
             )
             if local:
                 mv = max(0.0, mv)
                 dv = max(0.0, dv)
                 iv = max(0.0, iv)
                 best = max(best, _max3(mv, dv, iv))
-            cm[j] = mv
-            cd[j] = dv
-            ci[j] = iv
+            cm[unsafe_offset=j] = mv
+            cd[unsafe_offset=j] = dv
+            ci[unsafe_offset=j] = iv
             j += 1
         var tm = pm
         pm = cm
@@ -145,7 +158,9 @@ def _alignment_score(
         ci = ti
     if local:
         return best
-    return _max3(pm[nq], pd[nq], pi[nq])
+    return _max3(
+        pm[unsafe_offset=nq], pd[unsafe_offset=nq], pi[unsafe_offset=nq]
+    )
 
 
 def _alignment_trace(
@@ -166,29 +181,31 @@ def _alignment_trace(
     var cols = nq + 1
     var cells = (nt + 1) * cols
     var pm = scores
-    var pd = scores + cols
-    var pi = scores + 2 * cols
-    var cm = scores + 3 * cols
-    var cd = scores + 4 * cols
-    var ci = scores + 5 * cols
+    var pd = scores.unsafe_offset(cols)
+    var pi = scores.unsafe_offset(2 * cols)
+    var cm = scores.unsafe_offset(3 * cols)
+    var cd = scores.unsafe_offset(4 * cols)
+    var ci = scores.unsafe_offset(5 * cols)
     var mt = traces
-    var dt = traces + cells
-    var it = traces + 2 * cells
+    var dt = traces.unsafe_offset(cells)
+    var it = traces.unsafe_offset(2 * cells)
 
     if local:
         for j in range(cols):
-            pm[j] = 0.0
-            pd[j] = 0.0
-            pi[j] = 0.0
+            pm[unsafe_offset=j] = 0.0
+            pd[unsafe_offset=j] = 0.0
+            pi[unsafe_offset=j] = 0.0
     else:
-        pm[0] = 0.0
-        pd[0] = NEG
-        pi[0] = NEG
+        pm[unsafe_offset=0] = 0.0
+        pd[unsafe_offset=0] = NEG
+        pi[unsafe_offset=0] = NEG
         for j in range(1, nq + 1):
-            pm[j] = NEG
-            pd[j] = NEG
-            pi[j] = open_gap_score + Float64(j - 1) * extend_gap_score
-            it[j] = UInt8(0) if j == 1 else UInt8(2)
+            pm[unsafe_offset=j] = NEG
+            pd[unsafe_offset=j] = NEG
+            pi[unsafe_offset=j] = (
+                open_gap_score + Float64(j - 1) * extend_gap_score
+            )
+            it[unsafe_offset=j] = UInt8(0) if j == 1 else UInt8(2)
 
     var best = 0.0 if local else NEG
     var best_i = 0
@@ -197,45 +214,50 @@ def _alignment_trace(
     for i in range(1, nt + 1):
         var row_start = i * cols
         if local:
-            cm[0] = 0.0
-            cd[0] = 0.0
-            ci[0] = 0.0
+            cm[unsafe_offset=0] = 0.0
+            cd[unsafe_offset=0] = 0.0
+            ci[unsafe_offset=0] = 0.0
         else:
-            cm[0] = NEG
-            cd[0] = open_gap_score + Float64(i - 1) * extend_gap_score
-            ci[0] = NEG
-            dt[row_start] = UInt8(0) if i == 1 else UInt8(1)
-        var target_char = target[i - 1]
+            cm[unsafe_offset=0] = NEG
+            cd[unsafe_offset=0] = (
+                open_gap_score + Float64(i - 1) * extend_gap_score
+            )
+            ci[unsafe_offset=0] = NEG
+            dt[unsafe_offset=row_start] = UInt8(0) if i == 1 else UInt8(1)
+        var target_char = target[unsafe_offset=i - 1]
         for j in range(1, nq + 1):
             var idx = row_start + j
-            var sub = match_score if target_char == query[j - 1] else mismatch_score
+            var sub = (
+                match_score if target_char
+                == query[unsafe_offset=j - 1] else mismatch_score
+            )
 
-            var mbase = pm[j - 1]
+            var mbase = pm[unsafe_offset=j - 1]
             var ms = UInt8(0)
-            if pd[j - 1] > mbase:
-                mbase = pd[j - 1]
+            if pd[unsafe_offset=j - 1] > mbase:
+                mbase = pd[unsafe_offset=j - 1]
                 ms = UInt8(1)
-            if pi[j - 1] > mbase:
-                mbase = pi[j - 1]
+            if pi[unsafe_offset=j - 1] > mbase:
+                mbase = pi[unsafe_offset=j - 1]
                 ms = UInt8(2)
             var mv = mbase + sub
-            var dv = pm[j] + open_gap_score
+            var dv = pm[unsafe_offset=j] + open_gap_score
             var ds = UInt8(0)
-            var candidate = pd[j] + extend_gap_score
+            var candidate = pd[unsafe_offset=j] + extend_gap_score
             if candidate > dv:
                 dv = candidate
                 ds = UInt8(1)
-            candidate = pi[j] + open_gap_score
+            candidate = pi[unsafe_offset=j] + open_gap_score
             if candidate > dv:
                 dv = candidate
                 ds = UInt8(2)
-            var iv = cm[j - 1] + open_gap_score
+            var iv = cm[unsafe_offset=j - 1] + open_gap_score
             var istate = UInt8(0)
-            candidate = cd[j - 1] + open_gap_score
+            candidate = cd[unsafe_offset=j - 1] + open_gap_score
             if candidate > iv:
                 iv = candidate
                 istate = UInt8(1)
-            candidate = ci[j - 1] + extend_gap_score
+            candidate = ci[unsafe_offset=j - 1] + extend_gap_score
             if candidate > iv:
                 iv = candidate
                 istate = UInt8(2)
@@ -251,12 +273,12 @@ def _alignment_trace(
                 if iv <= 0.0:
                     iv = 0.0
                     istate = UInt8(3)
-            cm[j] = mv
-            cd[j] = dv
-            ci[j] = iv
-            mt[idx] = ms
-            dt[idx] = ds
-            it[idx] = istate
+            cm[unsafe_offset=j] = mv
+            cd[unsafe_offset=j] = dv
+            ci[unsafe_offset=j] = iv
+            mt[unsafe_offset=idx] = ms
+            dt[unsafe_offset=idx] = ds
+            it[unsafe_offset=idx] = istate
             if local:
                 var state = _best_state(mv, dv, iv)
                 var value = _max3(mv, dv, iv)
@@ -279,12 +301,16 @@ def _alignment_trace(
         best_i = nt
         best_j = nq
         var idx = nt * cols + nq
-        best_state = _best_state(pm[nq], pd[nq], pi[nq])
-        best = _max3(pm[nq], pd[nq], pi[nq])
+        best_state = _best_state(
+            pm[unsafe_offset=nq], pd[unsafe_offset=nq], pi[unsafe_offset=nq]
+        )
+        best = _max3(
+            pm[unsafe_offset=nq], pd[unsafe_offset=nq], pi[unsafe_offset=nq]
+        )
 
-    result[0] = best
-    result[1] = Float64(best_i)
-    result[2] = Float64(best_j)
+    result[unsafe_offset=0] = best
+    result[unsafe_offset=1] = Float64(best_i)
+    result[unsafe_offset=2] = Float64(best_j)
     var i = best_i
     var j = best_j
     var state = best_state
@@ -294,40 +320,40 @@ def _alignment_trace(
         if state == UInt8(0):
             if i == 0 or j == 0:
                 break
-            operations[count] = UInt8(0)
-            state = mt[idx]
+            operations[unsafe_offset=count] = UInt8(0)
+            state = mt[unsafe_offset=idx]
             i -= 1
             j -= 1
         elif state == UInt8(1):
             if i == 0:
                 break
-            operations[count] = UInt8(1)
-            state = dt[idx]
+            operations[unsafe_offset=count] = UInt8(1)
+            state = dt[unsafe_offset=idx]
             i -= 1
         else:
             if j == 0:
                 break
-            operations[count] = UInt8(2)
-            state = it[idx]
+            operations[unsafe_offset=count] = UInt8(2)
+            state = it[unsafe_offset=idx]
             j -= 1
         count += 1
-    result[3] = Float64(i)
-    result[4] = Float64(j)
+    result[unsafe_offset=3] = Float64(i)
+    result[unsafe_offset=4] = Float64(j)
     return count
 
 
 def _line_end(data: BPtr, n: Int, start: Int) -> Int:
     var pos = start
-    while pos < n and data[pos] != UInt8(10):
+    while pos < n and data[unsafe_offset=pos] != UInt8(10):
         pos += 1
-    if pos > start and data[pos - 1] == UInt8(13):
+    if pos > start and data[unsafe_offset=pos - 1] == UInt8(13):
         return pos - 1
     return pos
 
 
 def _next_line(data: BPtr, n: Int, start: Int) -> Int:
     var pos = start
-    while pos < n and data[pos] != UInt8(10):
+    while pos < n and data[unsafe_offset=pos] != UInt8(10):
         pos += 1
     return min(pos + 1, n)
 
@@ -336,9 +362,9 @@ def _fasta_count(data: BPtr, n: Int) -> Int:
     var count = 0
     var bol = True
     for i in range(n):
-        if bol and data[i] == UInt8(62):
+        if bol and data[unsafe_offset=i] == UInt8(62):
             count += 1
-        bol = data[i] == UInt8(10)
+        bol = data[unsafe_offset=i] == UInt8(10)
     return count
 
 
@@ -347,7 +373,8 @@ def _fasta_scan(data: BPtr, n: Int, positions: IPtr) -> Int:
     var record = 0
     while pos < n:
         while pos < n and not (
-            data[pos] == UInt8(62) and (pos == 0 or data[pos - 1] == UInt8(10))
+            data[unsafe_offset=pos] == UInt8(62)
+            and (pos == 0 or data[unsafe_offset=pos - 1] == UInt8(10))
         ):
             pos += 1
         if pos == n:
@@ -357,13 +384,14 @@ def _fasta_scan(data: BPtr, n: Int, positions: IPtr) -> Int:
         var seq_start = _next_line(data, n, header_start)
         pos = seq_start
         while pos < n and not (
-            data[pos] == UInt8(62) and (pos == 0 or data[pos - 1] == UInt8(10))
+            data[unsafe_offset=pos] == UInt8(62)
+            and (pos == 0 or data[unsafe_offset=pos - 1] == UInt8(10))
         ):
             pos += 1
-        positions[record * 4] = Int64(header_start)
-        positions[record * 4 + 1] = Int64(header_end)
-        positions[record * 4 + 2] = Int64(seq_start)
-        positions[record * 4 + 3] = Int64(pos)
+        positions[unsafe_offset=record * 4] = Int64(header_start)
+        positions[unsafe_offset=record * 4 + 1] = Int64(header_end)
+        positions[unsafe_offset=record * 4 + 2] = Int64(seq_start)
+        positions[unsafe_offset=record * 4 + 3] = Int64(pos)
         record += 1
     return record
 
@@ -372,13 +400,13 @@ def _fastq_count(data: BPtr, n: Int) -> Int:
     var pos = 0
     var records = 0
     while pos < n:
-        if data[pos] != UInt8(64):
+        if data[unsafe_offset=pos] != UInt8(64):
             return -1
         pos = _next_line(data, n, pos)
         var seq_len = 0
         var found_plus = False
         while pos < n:
-            if data[pos] == UInt8(43):
+            if data[unsafe_offset=pos] == UInt8(43):
                 found_plus = True
                 pos = _next_line(data, n, pos)
                 break
@@ -407,7 +435,7 @@ def _fastq_scan(data: BPtr, n: Int, positions: IPtr) -> Int:
     var pos = 0
     var record = 0
     while pos < n:
-        if data[pos] != UInt8(64):
+        if data[unsafe_offset=pos] != UInt8(64):
             return -1
         var header_start = pos + 1
         var header_end = _line_end(data, n, header_start)
@@ -417,14 +445,14 @@ def _fastq_scan(data: BPtr, n: Int, positions: IPtr) -> Int:
         var seq_end = pos
         var found_plus = False
         while pos < n:
-            if data[pos] == UInt8(43):
+            if data[unsafe_offset=pos] == UInt8(43):
                 seq_end = pos
                 found_plus = True
                 pos = _next_line(data, n, pos)
                 break
             var end = _line_end(data, n, pos)
             for k in range(pos, end):
-                var c = data[k]
+                var c = data[unsafe_offset=k]
                 if (
                     c == UInt8(32)
                     or c == UInt8(9)
@@ -445,25 +473,29 @@ def _fastq_scan(data: BPtr, n: Int, positions: IPtr) -> Int:
                 return -1
             quality_end = _line_end(data, n, pos)
             for k in range(pos, quality_end):
-                if data[k] < UInt8(33) or data[k] > UInt8(126):
+                if data[unsafe_offset=k] < UInt8(33) or data[
+                    unsafe_offset=k
+                ] > UInt8(126):
                     return -3
             pos = _next_line(data, n, pos)
         else:
             while pos < n and quality_len < seq_len:
                 quality_end = _line_end(data, n, pos)
                 for k in range(pos, quality_end):
-                    if data[k] < UInt8(33) or data[k] > UInt8(126):
+                    if data[unsafe_offset=k] < UInt8(33) or data[
+                        unsafe_offset=k
+                    ] > UInt8(126):
                         return -3
                 quality_len += quality_end - pos
                 pos = _next_line(data, n, pos)
         if quality_len != seq_len:
             return -1
-        positions[record * 6] = Int64(header_start)
-        positions[record * 6 + 1] = Int64(header_end)
-        positions[record * 6 + 2] = Int64(seq_start)
-        positions[record * 6 + 3] = Int64(seq_end)
-        positions[record * 6 + 4] = Int64(quality_start)
-        positions[record * 6 + 5] = Int64(quality_end)
+        positions[unsafe_offset=record * 6] = Int64(header_start)
+        positions[unsafe_offset=record * 6 + 1] = Int64(header_end)
+        positions[unsafe_offset=record * 6 + 2] = Int64(seq_start)
+        positions[unsafe_offset=record * 6 + 3] = Int64(seq_end)
+        positions[unsafe_offset=record * 6 + 4] = Int64(quality_start)
+        positions[unsafe_offset=record * 6 + 5] = Int64(quality_end)
         record += 1
     return record
 
@@ -528,9 +560,9 @@ def _complement(c: UInt8) -> UInt8:
     return c
 
 
-def _complement_simd[W: Int](
-    chars: SIMD[DType.uint8, W],
-) -> SIMD[DType.uint8, W]:
+def _complement_simd[
+    W: Int
+](chars: SIMD[DType.uint8, W],) -> SIMD[DType.uint8, W]:
     var result = chars
     result = chars.eq(UInt8(65)).select(SIMD[DType.uint8, W](84), result)
     result = chars.eq(UInt8(67)).select(SIMD[DType.uint8, W](71), result)
@@ -573,11 +605,11 @@ def _reverse_complement_range(
     comptime W = simd_width_of[DType.uint8]()
     var i = start
     while i + W <= end:
-        var chars = src.load[width=W](n - i - W).reversed()
-        dst.store(i, _complement_simd[W](chars))
+        var chars = src.unsafe_load[width=W](n - i - W).reversed()
+        dst.unsafe_store(i, _complement_simd[W](chars))
         i += W
     while i < end:
-        dst[i] = _complement(src[n - 1 - i])
+        dst[unsafe_offset=i] = _complement(src[unsafe_offset=n - 1 - i])
         i += 1
 
 
@@ -682,7 +714,12 @@ def mbp_alignment_trace(
 def mbp_fasta_scan(
     data_addr: Int, n: Int, positions_addr: Int, positions_capacity: Int
 ) abi("C") -> Int:
-    if data_addr == 0 or positions_addr == 0 or n <= 0 or positions_capacity <= 0:
+    if (
+        data_addr == 0
+        or positions_addr == 0
+        or n <= 0
+        or positions_capacity <= 0
+    ):
         return -1
     var needed = _fasta_count(BPtr(unsafe_from_address=data_addr), n)
     if needed > positions_capacity:
@@ -698,7 +735,12 @@ def mbp_fasta_scan(
 def mbp_fastq_scan(
     data_addr: Int, n: Int, positions_addr: Int, positions_capacity: Int
 ) abi("C") -> Int:
-    if data_addr == 0 or positions_addr == 0 or n <= 0 or positions_capacity <= 0:
+    if (
+        data_addr == 0
+        or positions_addr == 0
+        or n <= 0
+        or positions_capacity <= 0
+    ):
         return -1
     var needed = _fastq_count(BPtr(unsafe_from_address=data_addr), n)
     if needed < 0 or needed > positions_capacity:
@@ -722,17 +764,5 @@ def mbp_reverse_complement(
         return -1
     var src = BPtr(unsafe_from_address=src_addr)
     var dst = BPtr(unsafe_from_address=dst_addr)
-    if n < 32_000_000:
-        _reverse_complement_range(src, dst, n, 0, n)
-        return 0
-
-    comptime tasks = 8
-
-    @parameter
-    def work(task: Int):
-        var start = n * task // tasks
-        var end = n * (task + 1) // tasks
-        _reverse_complement_range(src, dst, n, start, end)
-
-    parallelize[work](tasks, tasks)
+    _reverse_complement_range(src, dst, n, 0, n)
     return 0
